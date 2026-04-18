@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flashlight Puzzle</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; cursor: none !important; }
+
+    body {
+      background: #000;
+      height: 100vh; width: 100vw;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+      user-select: none;
+    }
+
+    .scene { position: absolute; inset: 0; color: #fff; }
+
+    .flashlight {
+      position: fixed; inset: 0;
+      background: radial-gradient(
+        circle 160px at var(--mx, 50%) var(--my, 50%),
+        transparent 0%,
+        rgba(0, 0, 0, 0.6) 45%,
+        #000 100%
+      );
+      pointer-events: none; z-index: 100;
+      opacity: 1;
+      will-change: background;
+    }
+    .flashlight.locked {
+      opacity: 1 !important;
+      background: #000 !important;
+    }
+
+    @keyframes flicker {
+      0%, 100% { opacity: 1; } 20% { opacity: 0.15; } 40% { opacity: 0.9; }
+      60% { opacity: 0.05; } 80% { opacity: 0.7; }
+    }
+    .flashlight.flickering {
+      animation: flicker 0.6s steps(1) forwards;
+      opacity: 1 !important;
+    }
+
+    .hint-static {
+      position: absolute; font-size: 1.4rem; letter-spacing: 3px;
+      opacity: 0.8; text-shadow: 0 0 10px rgba(255,255,255,0.3);
+      pointer-events: none;
+    }
+    .hint-tl { top: 40px; left: 40px; }
+    .hint-br { bottom: 40px; right: 40px; }
+
+    .hint-random {
+      position: absolute; font-size: 1.5rem; font-weight: bold;
+      letter-spacing: 2px; opacity: 0.85; text-shadow: 0 0 14px rgba(255,255,255,0.4);
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+    }
+    .hint-random.flipped { transform: rotate(180deg) translate(-50%, -50%); }
+
+    .spot {
+      position: absolute; width: 50px; height: 50px;
+      transform: translate(-50%, -50%);
+      z-index: 10; transition: transform 0.1s;
+    }
+    .spot.revealed {
+      background: #ff0000 !important;
+      border: 2px solid #ff0000 !important;
+      box-shadow: 0 0 40px #ff0000, 0 0 80px rgba(255, 0, 0, 0.6);
+      transition: all 0.3s;
+    }
+    .spot:active { transform: translate(-50%, -50%) scale(0.85); }
+
+    .dev-panel {
+      position: fixed; top: 20px; right: 20px;
+      background: rgba(10, 10, 15, 0.95);
+      border: 1px solid #333; border-radius: 8px;
+      padding: 12px 16px; z-index: 200;
+      display: none; flex-direction: column; gap: 8px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.8);
+    }
+    .dev-panel.active { display: flex; }
+    .dev-panel input {
+      background: #111; border: 1px solid #444; color: #0f0;
+      padding: 6px 10px; font-family: monospace; font-size: 14px;
+      border-radius: 4px; outline: none; cursor: none;
+    }
+    .dev-panel input:focus { border-color: #0f0; }
+    .dev-panel label { color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+    .dev-status { color: #0f0; font-size: 12px; min-height: 16px; }
+    .close-dev { color: #f00; font-size: 11px; cursor: pointer; text-align: right; }
+    .close-dev:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="scene">
+    <span class="hint-static hint-tl">y1080</span>
+    <span class="hint-static hint-br">x1920</span>
+    <span class="hint-random" id="rand-y"></span>
+    <span class="hint-random flipped" id="rand-x"></span>
+    <div class="spot" id="target-spot"></div>
+  </div>
+  <div class="flashlight" id="flashlight"></div>
+
+  <div class="dev-panel" id="dev-panel">
+    <div class="close-dev" onclick="toggleDevPanel()"> Close</div>
+    <label>Dev Access</label>
+    <input type="text" id="dev-input" placeholder="Enter passphrase..." autocomplete="off">
+    <div class="dev-status" id="dev-status"></div>
+  </div>
+
+  <script>
+    const flashlight = document.getElementById('flashlight');
+    const spot = document.getElementById('target-spot');
+    let isLocked = false;
+    let activeScramblers = [];
+    let lastTime = 0;
+
+    // 🔦 Track mouse
+    document.addEventListener('mousemove', (e) => {
+      if (!isLocked) {
+        document.documentElement.style.setProperty('--mx', e.clientX + 'px');
+        document.documentElement.style.setProperty('--my', e.clientY + 'px');
+      }
+    });
+
+    // ⚡ Flicker every 10s
+    setInterval(() => {
+      if (!isLocked) {
+        flashlight.classList.add('flickering');
+        setTimeout(() => flashlight.classList.remove('flickering'), 600);
+      }
+    }, 10000);
+
+    // 🚫 Anti-cheat: tab lock
+    document.addEventListener('visibilitychange', () => {
+      document.hidden ? lockFlashlight() : unlockFlashlight();
+    });
+    window.addEventListener('blur', lockFlashlight);
+    window.addEventListener('focus', unlockFlashlight);
+
+    function lockFlashlight() { isLocked = true; flashlight.classList.add('locked'); }
+    function unlockFlashlight() { isLocked = false; flashlight.classList.remove('locked'); }
+
+    // 🛡️ Anti-cheat: block dev tools
+    document.addEventListener('contextmenu', e => e.preventDefault());
+    document.addEventListener('keydown', e => {
+      if (e.key === 'F12' || 
+          (e.ctrlKey && e.shiftKey && ['I','J','C'].includes(e.key.toUpperCase())) ||
+          (e.ctrlKey && e.key.toLowerCase() === 'u')) {
+        e.preventDefault();
+        console.warn('⚠️ ARG Anti-Cheat: Blocked');
+      }
+    });
+
+    // 🌍 ORBIT SYSTEM: Hints spin in a big circle
+    const orbitY = { angle: Math.random() * Math.PI * 2, speed: 0.0009 };
+    const orbitX = { angle: Math.random() * Math.PI * 2, speed: -0.0007 }; // Opposite direction
+
+    function updateOrbits(timestamp) {
+      if (!lastTime) lastTime = timestamp;
+      const delta = timestamp - lastTime;
+      lastTime = timestamp;
+
+      const cx = window.innerWidth / 2;
+      const cy = window.innerHeight / 2;
+      // Big circle radius (35% of smallest viewport dimension)
+      const radius = Math.min(window.innerWidth, window.innerHeight) * 0.35;
+
+      orbitY.angle += orbitY.speed * delta;
+      orbitX.angle += orbitX.speed * delta;
+
+      document.getElementById('rand-y').style.left = (cx + Math.cos(orbitY.angle) * radius) + 'px';
+      document.getElementById('rand-y').style.top = (cy + Math.sin(orbitY.angle) * radius) + 'px';
+
+      document.getElementById('rand-x').style.left = (cx + Math.cos(orbitX.angle) * radius) + 'px';
+      document.getElementById('rand-x').style.top = (cy + Math.sin(orbitX.angle) * radius) + 'px';
+
+      requestAnimationFrame(updateOrbits);
+    }
+    requestAnimationFrame(updateOrbits);
+
+    // 🎲 Per-digit speed tier scrambler
+    function createDigitScrambler(elementId, prefix, number) {
+      const digits = number.toString().split('');
+      const states = digits.map(() => true);
+      const timers = [];
+
+      function render() {
+        let txt = prefix;
+        for (let i = 0; i < digits.length; i++) {
+          txt += states[i] ? digits[i] : '?';
+        }
+        document.getElementById(elementId).textContent = txt;
+      }
+
+      if (digits.length > 0) timers.push(setInterval(() => { states[0] = !states[0]; render(); }, 350));
+      if (digits.length > 1) timers.push(setInterval(() => { states[1] = !states[1]; render(); }, 120));
+      if (digits.length > 2) timers.push(setInterval(() => { states[2] = !states[2]; render(); }, 45));
+      if (digits.length > 3) {
+        let t1, t2;
+        function cycleFourth() {
+          states[3] = false; render();
+          t1 = setTimeout(() => {
+            states[3] = true; render();
+            t2 = setTimeout(cycleFourth, 60);
+          }, 4000);
+        }
+        cycleFourth();
+        timers.push(() => { clearTimeout(t1); clearTimeout(t2); });
+      }
+
+      render();
+      return () => timers.forEach(t => t());
+    }
+
+    // 🎯 Generate puzzle & start scrambling
+    const generatePuzzle = () => {
+      activeScramblers.forEach(cleanup => cleanup());
+      activeScramblers = [];
+
+      const pad = 80;
+      const maxX = window.innerWidth - pad * 2;
+      const maxY = window.innerHeight - pad * 2;
+      const puzzleX = Math.floor(Math.random() * maxX) + pad;
+      const puzzleY = Math.floor(Math.random() * maxY) + pad;
+
+      spot.style.left = puzzleX + 'px';
+      spot.style.top = puzzleY + 'px';
+
+      activeScramblers.push(createDigitScrambler('rand-y', 'y', puzzleY));
+      activeScramblers.push(createDigitScrambler('rand-x', 'x', puzzleX));
+    };
+
+    generatePuzzle();
+    window.addEventListener('resize', () => {
+      // Orbit auto-adjusts via requestAnimationFrame reading window size each frame
+      generatePuzzle();
+    });
+
+    // 🔗 Redirect
+    spot.addEventListener('click', () => {
+      window.location.href = 'https://swobabobs.github.io/n/'; //  CHANGE THIS
+    });
+
+    // 🔐 Secret dev panel (P key)
+    let devOpen = false;
+    document.addEventListener('keydown', e => {
+      if (e.key.toLowerCase() === 'p' && !devOpen) toggleDevPanel();
+    });
+
+    function toggleDevPanel() {
+      const panel = document.getElementById('dev-panel');
+      devOpen = !devOpen;
+      panel.classList.toggle('active', devOpen);
+      if (devOpen) {
+        document.getElementById('dev-input').focus();
+        document.getElementById('dev-input').value = '';
+        document.getElementById('dev-status').textContent = '';
+        spot.classList.remove('revealed');
+      }
+    }
+
+    document.getElementById('dev-input').addEventListener('input', e => {
+      const val = e.target.value.toLowerCase().trim();
+      const status = document.getElementById('dev-status');
+      if (val === 'sweetheart') {
+        status.textContent = '✓ Target revealed';
+        status.style.color = '#ff0000';
+        spot.classList.add('revealed');
+      } else if (val.length > 0) {
+        status.textContent = '✗ Incorrect';
+        status.style.color = '#f00';
+        spot.classList.remove('revealed');
+      } else {
+        status.textContent = '';
+        spot.classList.remove('revealed');
+      }
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && devOpen) toggleDevPanel();
+    });
+  </script>
+</body>
+</html>
